@@ -181,8 +181,6 @@ func writeAtELFOffset(f *elf_reader.ELF32File, offset uint32,
 // replacedStringTable entries. Returns nil on success.
 func relocateStringTables(f *elf_reader.ELF32File,
 	newTables []replacedStringTable) error {
-	// TODO (next): Fix the issue with string table section offsets being
-	// incorrectly set.
 	if len(newTables) == 0 {
 		return nil
 	}
