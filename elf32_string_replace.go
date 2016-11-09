@@ -237,46 +237,51 @@ func relocateStringTables(f *elf_reader.ELF32File,
 		currentFileOffset += 1
 		stringTableSegmentSize += 1
 	}
-	newProgramHeader := elf_reader.ELF32ProgramHeader{
+	toAppend := make([]elf_reader.ELF32ProgramHeader, len(f.Segments)+1)
+	programHeadersSize := uint32(binary.Size(toAppend))
+	copy(toAppend, f.Segments)
+	toAppend[len(toAppend)-1] = elf_reader.ELF32ProgramHeader{
 		Type:            elf_reader.LoadableSegment,
 		FileOffset:      originalEndOffset,
 		VirtualAddress:  originalEndVA,
 		PhysicalAddress: 0,
-		FileSize:        stringTableSegmentSize,
-		MemorySize:      stringTableSegmentSize,
+		FileSize:        stringTableSegmentSize + programHeadersSize,
+		MemorySize:      stringTableSegmentSize + programHeadersSize,
 		Flags:           2,
 		Align:           8,
 	}
-	f.Segments = append(f.Segments, newProgramHeader)
-	// We'll expand our newly created segment to also include the new program
-	// headers, and some extra padding at the end of the file.
-	programHeadersSize := uint32(binary.Size(f.Segments))
-	f.Segments[len(f.Segments)-1].FileSize += programHeadersSize
-	f.Segments[len(f.Segments)-1].MemorySize += programHeadersSize
-	// Find the original "program header segment" segment, then update its
-	// VA, offset, and size, too.
-	var segment *elf_reader.ELF32ProgramHeader
-	for i := range f.Segments {
-		segment = &(f.Segments[i])
-		if segment.Type != elf_reader.ProgramHeaderSegment {
-			segment = nil
+	// Find the program header segment segment, then update its VA, offset, and
+	// size, too.
+	for i := range toAppend {
+		if toAppend[i].Type != elf_reader.ProgramHeaderSegment {
 			continue
 		}
+		toAppend[i].FileOffset = currentFileOffset
+		toAppend[i].VirtualAddress = currentVirtualAddress
+		toAppend[i].PhysicalAddress = 0
+		toAppend[i].FileSize = programHeadersSize
+		toAppend[i].MemorySize = programHeadersSize
+		toAppend[i].Align = 8
 		break
 	}
-	if segment == nil {
-		return fmt.Errorf("Couldn't find the program header segment")
-	}
-	segment.FileOffset = currentFileOffset
-	segment.VirtualAddress = currentVirtualAddress
-	segment.PhysicalAddress = 0
-	segment.FileSize = programHeadersSize
-	segment.MemorySize = programHeadersSize
-	segment.Align = 8
-	// Finally, write the updated program header table to the end of the file.
-	e = writeAtELFOffset(f, currentFileOffset, f.Segments)
+	// Write the updated program header table to the end of the file.
+	e = writeAtELFOffset(f, currentFileOffset, toAppend)
 	if e != nil {
 		return fmt.Errorf("Error writing updated program headers: %s", e)
+	}
+	// Update the ELF header to point to the new program header table. The
+	// offset to the start of the table is at 28 bytes into the ELF header, and
+	// the 2-byte number of entries is 44 bytes into the header.
+	e = writeAtELFOffset(f, 28, currentFileOffset)
+	if e != nil {
+		return fmt.Errorf("Failed writing the program header table offset: %s",
+			e)
+	}
+	programHeaderEntryCount := uint16(len(toAppend))
+	e = writeAtELFOffset(f, 44, programHeaderEntryCount)
+	if e != nil {
+		return fmt.Errorf("Failed writing the number of program header "+
+			"entries: %s", e)
 	}
 	e = f.ReparseData()
 	if e != nil {
@@ -477,8 +482,8 @@ func replaceVersionRequirementStrings(f *elf_reader.ELF32File,
 	return nil
 }
 
-// Replaces strings in the dynamic linking table. Assumes that the file will
-// only contain one dynamic linking table.
+// Replaces strings and the string table address in the dynamic linking table.
+// Assumes that the file will only contain one dynamic linking table.
 func replaceDynamicTableStrings(f *elf_reader.ELF32File,
 	replacements []replacedStringTable) error {
 	var sectionIndex uint16
@@ -507,11 +512,23 @@ func replaceDynamicTableStrings(f *elf_reader.ELF32File,
 	currentOffset := section.FileOffset
 	entrySize := uint32(binary.Size(&elf_reader.ELF32DynamicEntry{}))
 	for _, entry := range entries {
-		// Only tags 1, 14 and 15 have strings as values, as far as I know. The
-		// value field is 4 bytes from the start of the table entry.
+		// Only tags 1, 14 and 15 have strings as values, as far as I know. Tag
+		// 5 contains a string table address. The value field is 4 bytes from
+		// the start of the table entry.
 		switch entry.Tag {
 		case 1, 14, 15:
 			e = replaceSingleOffset(f, currentOffset+4, table)
+			if e != nil {
+				return fmt.Errorf("Failed replacing dynamic table string: %s",
+					e)
+			}
+		case 5:
+			e = writeAtELFOffset(f, currentOffset+4, table.newVirtualAddress)
+			if e != nil {
+				return fmt.Errorf(
+					"Failed replacing dynamic table string table address: %s",
+					e)
+			}
 		default:
 		}
 		currentOffset += entrySize
