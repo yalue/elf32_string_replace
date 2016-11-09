@@ -5,7 +5,7 @@
 //
 // Usage:
 //    ./elf32_string_replace -file /bin/bash -output ./bash_modified \
-//        -regex "libc.so.6" -replace "libc_alternative.so.6"
+//        -to_match "libc.so.6" -replace "libc_alternative.so.6"
 package main
 
 import (

@@ -45,6 +45,14 @@ pmap -x $$ | grep libc
 # b6f1a000       0       0       0 rw--- libc_copy-2.19.so
 ```
 
+Compiling the program
+---------------------
+The program can be built using the go programming language. First install the
+go compiler, then run `go install github.com/yalue/elf32_string_replace`.
+
+Alternatively some pre-built versions are available on the[releases page for
+this project](https://github.com/yalue/elf32_string_replace/releases).
+
 How ELF strings are replaced
 ============================
 
@@ -90,7 +98,7 @@ How ELF strings are replaced
  10. Write the result to the new output ELF file.
 
 Known fields which refer to string table entries
-================================================
+------------------------------------------------
 
  - The "Name" field in section headers
 
