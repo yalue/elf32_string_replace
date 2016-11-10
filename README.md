@@ -56,44 +56,54 @@ this project](https://github.com/yalue/elf32_string_replace/releases).
 How ELF strings are replaced
 ============================
 
- 1. Identify all string table sections.
+ 1. Identify all string table sections. Each section contains a list of strings
+    delimited by null bytes.
 
  2. For each string in each string array, see if it matches the search regex.
-    If so, record its original index, perform the replacement, and append the
-    new replacement to the end of the table. New and old locations of tables
-    are recorded in `replacedStringTable` structures in the code, and
-    individual string locations are recorded in `replacedString` structures.
+    If so, record its original offset into the table, perform the replacement,
+    and append the post-replacement bytes to the end of a copy of the table.
+    In the code, pre- and post-replacement string offsets are stored in
+    `replacedString` structures, and the `replacedStringTable` structure
+    tracks higher-level data about the table in which the strings were
+    replaced.
 
- 3. Replace all string table references (locations listed below) with offsets
-    into the newly rebuilt string tables, if the referenced string was changed.
-    This is easy to do by checking each string's offset into the correct table
-    against the list of `replacedString`s for that table.
+ 3. Replace all string references in other parts of the ELF file. The known
+    locations which can refer to strings are listed below. ELF files refer to
+    strings by specifying a string table section, and the offset into that
+    section at which a specific string begins. For each string reference, the
+    code makes use of the `replacedStringTable` and `replacedString` structures
+    to see if a string has been replaced, and if so, what the new offset of the
+    string should be.
 
- 4. Rewrite any hash tables? This step is actually not carried out, since hash
-    values used in compiled code will still refer to the original symbol names.
-    Therefore, this step is actually not carried out for now.
+ 4. Potentially rewrite any hash tables. This step is actually not carried out,
+    since hash values used in compiled code will still refer to the original
+    symbol names. Hopefully this will always be okay, but this step is listed
+    here anyway in case something breaks and re-building hash tables turns out
+    to be necessary.
 
- 5. Append the new string table sections to the end of the file. Steps 5-9 are
-    carried out in the `relocateStringTables` function in the code.
+ 5. Append the new string table sections to the end of the file. This step,
+    along with steps 6-9, are carried out in the `relocateStringTables`
+    function in the code.
 
  6. Change the offset and length of the original string table section headers
     to refer to the locations and sizes of the updated string tables (now at
     the end of the file). Update the Virtual Address fields in addition to the
     file offsets.
 
- 7. Add a new loadable read only data segment that will encompass the string
-    tables at the end of the file, in addition to a list of updated program
-    headers. The list of program headers will contain one more entry (this one)
-    than the original program headers. Make sure it uses the correct virtual
-    address and file offsets referring to the start of the newly appended
-    string tables.
+ 7. Create a new loadable read-only segment to ensure that the string tables,
+    now located at the end of the file, will actually be loaded into memory.
+    This requires adding a new entry to the program header table, meaning that
+    a modified copy of the program header table will also need to be appended
+    to the end of the file. The new read-only segment can fill the dual
+    purpose of loading both the relocated string table and program headers into
+    memory.
 
- 8. Write the new program header table to the end of the file, after the string
-    tables. Update the program headers segment (within this table) to point to
-    the new location and size of this table.
+ 8. The program header table contains a self-referential entry called the
+    program header segment. This entry, located in our modified copy of the
+    program header table, must be updated to include the new virtual address,
+    offset, and size of the table.
 
- 9. Update the ELF file header's program header table offset and sizes to
-    the values for the newly appended copy.
+ 9. Update the program header's file offset and size in the ELF file header.
 
  10. Write the result to the new output ELF file.
 
@@ -105,8 +115,7 @@ Known fields which refer to string table entries
  - The "Name" field in symbol table entries
 
  - The "Name" field in ELF32Verdaux structures, in the `.gnu_version_d`
-   sections. (The version symbol table contains 16-bit entries showing only
-   local, global, or user-defined scope).
+   sections.
 
  - In `.gnu_version_r` sections:
 
@@ -122,15 +131,18 @@ Known fields which refer to string table entries
 
     - The library search path (tag = 15)
 
- - Hash table sections must be rebuilt if symbol names are changed. To do this,
-   take the original hash table section and parse out the headers, etc. Then,
-   rebuild the hash table using the same number of buckets and so on, but use
-   the current symbol names.
-
- - GNU hash table sections must also be rebuilt if present.
+    - This isn't a string, but the dynamic section also contains an entry for
+      a string table's virtual address which must be updated in line with the
+      section relocation.
 
 Fields which *may* refer to strings, pending further investigation
-==================================================================
+------------------------------------------------------------------
 
  - The "Value" field in symbol table entries. If it contains the virtual
    address or offset of a string table entry, should it be adjusted?
+
+ - gcc appears to place all strings used in code in read-only data sections
+   rather than ELF string tables. If this turns out to not be the case, and
+   code sections contain hard-coded string offsets or virtual addresses, then
+   they would need to be changed too. Hopefully that doesn't happen--it would
+   make this project essentially impossible.
