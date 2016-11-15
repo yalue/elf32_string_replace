@@ -197,9 +197,9 @@ func relocateStringTables(f *elf_reader.ELF32File,
 	// Start by appending all of the tables to the end of the file
 	currentFileOffset := originalEndOffset
 	currentVirtualAddress := originalEndVA
-	var sectionHeaderOffset uint32
 	var newContentLength uint32
 	var t *replacedStringTable
+	var section *elf_reader.ELF32SectionHeader
 	for i := range newTables {
 		t = &(newTables[i])
 		t.newFileOffset = currentFileOffset
@@ -210,22 +210,16 @@ func relocateStringTables(f *elf_reader.ELF32File,
 		currentVirtualAddress += newContentLength
 		// Update the size, virtual address, and file offset in the section
 		// header for the original string table.
-		sectionHeaderOffset = getSectionHeaderOffset(f, t.sectionIndex)
-		e = writeAtELFOffset(f, sectionHeaderOffset+12, t.newVirtualAddress)
-		if e != nil {
-			return fmt.Errorf("Error updating section %d virtual address: %s",
-				t.sectionIndex, e)
-		}
-		e = writeAtELFOffset(f, sectionHeaderOffset+16, t.newFileOffset)
-		if e != nil {
-			return fmt.Errorf("Error updating section %d file offset: %s",
-				t.sectionIndex, e)
-		}
-		e = writeAtELFOffset(f, sectionHeaderOffset+20, newContentLength)
-		if e != nil {
-			return fmt.Errorf("Error updating section %d size: %s",
-				t.sectionIndex, e)
-		}
+		section = &(f.Sections[t.sectionIndex])
+		section.VirtualAddress = t.newVirtualAddress
+		section.FileOffset = t.newFileOffset
+		section.Size = newContentLength
+	}
+	// Write the (potentially) modified section headers back into the ELF file
+	// content.
+	e = writeAtELFOffset(f, f.Header.SectionHeaderOffset, f.Sections)
+	if e != nil {
+		return fmt.Errorf("Error updating section headers: %s", e)
 	}
 	// Pad to 8-byte alignment again before appending the new program header
 	// segment, too. (The program header segment will overlap with the new
@@ -237,35 +231,39 @@ func relocateStringTables(f *elf_reader.ELF32File,
 		currentFileOffset += 1
 		stringTableSegmentSize += 1
 	}
-	toAppend := make([]elf_reader.ELF32ProgramHeader, len(f.Segments)+1)
-	programHeadersSize := uint32(binary.Size(toAppend))
-	copy(toAppend, f.Segments)
-	toAppend[len(toAppend)-1] = elf_reader.ELF32ProgramHeader{
+	// Create a new segment which will hold the updated string tables.
+	newSegment := elf_reader.ELF32ProgramHeader{
 		Type:            elf_reader.LoadableSegment,
 		FileOffset:      originalEndOffset,
 		VirtualAddress:  originalEndVA,
 		PhysicalAddress: 0,
-		FileSize:        stringTableSegmentSize + programHeadersSize,
-		MemorySize:      stringTableSegmentSize + programHeadersSize,
+		FileSize:        stringTableSegmentSize,
+		MemorySize:      stringTableSegmentSize,
 		Flags:           2,
 		Align:           8,
 	}
-	// Find the program header segment segment, then update its VA, offset, and
-	// size, too.
-	for i := range toAppend {
-		if toAppend[i].Type != elf_reader.ProgramHeaderSegment {
+	f.Segments = append(f.Segments, newSegment)
+	// Update the new segment size to encompass the program header table, which
+	// we'll also append to the end of the file.
+	programHeadersSize := uint32(binary.Size(f.Segments))
+	f.Segments[len(f.Segments)-1].FileSize += programHeadersSize
+	f.Segments[len(f.Segments)-1].MemorySize += programHeadersSize
+	// Find the self-referential program header table segment, then update its
+	// VA, offset, and size, too.
+	for i := range f.Segments {
+		if f.Segments[i].Type != elf_reader.ProgramHeaderSegment {
 			continue
 		}
-		toAppend[i].FileOffset = currentFileOffset
-		toAppend[i].VirtualAddress = currentVirtualAddress
-		toAppend[i].PhysicalAddress = 0
-		toAppend[i].FileSize = programHeadersSize
-		toAppend[i].MemorySize = programHeadersSize
-		toAppend[i].Align = 8
+		f.Segments[i].FileOffset = currentFileOffset
+		f.Segments[i].VirtualAddress = currentVirtualAddress
+		f.Segments[i].PhysicalAddress = 0
+		f.Segments[i].FileSize = programHeadersSize
+		f.Segments[i].MemorySize = programHeadersSize
+		f.Segments[i].Align = 8
 		break
 	}
 	// Write the updated program header table to the end of the file.
-	e = writeAtELFOffset(f, currentFileOffset, toAppend)
+	e = writeAtELFOffset(f, currentFileOffset, f.Segments)
 	if e != nil {
 		return fmt.Errorf("Error writing updated program headers: %s", e)
 	}
@@ -277,7 +275,7 @@ func relocateStringTables(f *elf_reader.ELF32File,
 		return fmt.Errorf("Failed writing the program header table offset: %s",
 			e)
 	}
-	programHeaderEntryCount := uint16(len(toAppend))
+	programHeaderEntryCount := uint16(len(f.Segments))
 	e = writeAtELFOffset(f, 44, programHeaderEntryCount)
 	if e != nil {
 		return fmt.Errorf("Failed writing the number of program header "+
